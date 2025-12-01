@@ -1,0 +1,13 @@
+# Optional: GitHub Actions for automated deployment
+# This is not required but can help with CI/CD
+
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  # This workflow is optional - Railway and Vercel auto-deploy from GitHub
+  # You can delete this file if you prefer manual deployments
+
