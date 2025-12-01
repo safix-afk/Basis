@@ -33,11 +33,13 @@ This guide will help you deploy Basis for free to show Y Combinator.
    - Select the "Basis" repository
    - **Settings:**
      - **Name:** `basis-backend` (or any name)
-     - **Root Directory:** `backend`
+     - **Root Directory:** `backend` ⚠️ **IMPORTANT: Set this!**
      - **Environment:** `Python 3`
      - **Build Command:** `pip install -r requirements.txt`
      - **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
      - **Plan:** Select **FREE** (not Starter)
+   
+   **⚠️ CRITICAL:** Make sure "Root Directory" is set to `backend` - this tells Render where to find your `requirements.txt` file!
    
 3. **Add Environment Variables:**
    - Click "Environment" tab
