@@ -4,6 +4,7 @@ Basis Backend - FastAPI server for financial analysis code generation and execut
 import os
 import sys
 import io
+import re
 import traceback
 import warnings
 from contextlib import redirect_stdout, redirect_stderr
@@ -321,31 +322,212 @@ class CodeExecutor:
                 }
 
 
+def sanitize_generated_code(code: str) -> str:
+    """
+    Fix common syntax errors in LLM-generated code
+    Uses multiple passes to ensure all errors are caught
+    """
+    # Pass 1: Fix basic spacing and assignment issues
+    lines = code.split('\n')
+    fixed_lines = []
+    
+    for i, line in enumerate(lines):
+        original_line = line
+        stripped = line.strip()
+        
+        # Skip comments
+        if stripped.startswith('#'):
+            fixed_lines.append(line)
+            continue
+        
+        # Fix 1: Missing assignment operator - catch all variations
+        # Pattern: "data yf.download (" or "data yf.download(" -> "data = yf.download("
+        # This must come BEFORE removing spaces before parens
+        # Match: variable_name whitespace library.method optional_space optional_paren
+        line = re.sub(
+            r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s+(yf|pd|np|go|fig)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(',
+            r'\1 = \2.\3(',
+            line
+        )
+        
+        # Fix 1b: Missing assignment for go.Figure with space after dot
+        # Pattern: "fig go. Figure(" -> "fig = go.Figure("
+        line = re.sub(
+            r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s+go\.\s+Figure\s*\(',
+            r'\1 = go.Figure(',
+            line
+        )
+        
+        # Fix 4: Spaces after dots: "go. Figure" -> "go.Figure"
+        line = re.sub(r'go\.\s+Figure', 'go.Figure', line)
+        line = re.sub(r'pd\.\s+Timestamp', 'pd.Timestamp', line)
+        line = re.sub(r'np\.\s+', 'np.', line)
+        # General pattern for any module. method
+        line = re.sub(r'(\w+)\.\s+(\w+)', r'\1.\2', line)
+        
+        # Fix 5: Spaces before opening parentheses
+        # Pattern: "filterwarnings (" -> "filterwarnings("
+        # Be careful - only fix if it's clearly a function call
+        # Match: word boundary, word chars, space, opening paren
+        line = re.sub(r'\b(\w+)\s+\(', r'\1(', line)
+        
+        # Fix 6: Spaces in square brackets: "trace ['x']" -> "trace['x']"
+        line = re.sub(r'(\w+)\s+\[', r'\1[', line)
+        
+        # Fix 7: Unterminated strings in function calls
+        # Pattern: "('ignore)" -> "('ignore')"
+        # Match: opening paren, optional space, quote, text (no quote), closing paren
+        line = re.sub(r"\(\s*'([^')]+)\)", r"('\1')", line)
+        
+        # Fix 7b: Unterminated strings before closing parens (e.g., "yaxis_title='text)" -> "yaxis_title='text')")
+        # Pattern: quote, text, closing paren without closing quote
+        line = re.sub(r"='([^']+)\)", r"='\1')", line)
+        line = re.sub(r":\s*'([^']+)\)", r": '\1')", line)
+        line = re.sub(r"\s+'([^']+)\)", r" '\1')", line)
+        
+        # Fix 8: Check for unterminated strings
+        single_quotes = len([m for m in re.finditer(r"(?<!\\)'", line)])
+        if single_quotes % 2 == 1:
+            # Odd number of quotes = unterminated string
+            if re.search(r"\(\s*'[^']*$", line):
+                # Function call with unterminated string at end
+                open_parens = line.count('(')
+                close_parens = line.count(')')
+                if open_parens > close_parens:
+                    line = line.rstrip() + "')"
+                elif not stripped.endswith("')"):
+                    line = line.rstrip() + "'"
+        
+        # Fix 9: Extra quotes before closing parens
+        line = re.sub(r"True'\)", "True)", line)
+        line = re.sub(r"False'\)", "False)", line)
+        line = re.sub(r"=True'\)", "=True)", line)
+        line = re.sub(r"=False'\)", "=False)", line)
+        if re.search(r"'\)\s*$", line):
+            line = re.sub(r"'\)\s*$", ")", line)
+        
+        # Fix 10: Handle incomplete lines that might cause syntax errors
+        # If a line ends with an incomplete function call like "type(", try to complete it
+        # But be conservative - only fix obvious cases
+        if stripped.endswith('type(') or (stripped.endswith('(') and 'type(' in stripped and stripped.count('(') > stripped.count(')')):
+            # This is likely an incomplete line - we can't safely complete it
+            # But we can at least ensure it doesn't break the rest of the code
+            # If it's clearly incomplete, we might need to comment it out or add a pass
+            # For now, just ensure proper formatting
+            pass
+        
+        fixed_lines.append(line)
+    
+    code = '\n'.join(fixed_lines)
+    
+    # Pass 2: Try to compile and fix any remaining syntax errors
+    max_passes = 3
+    for pass_num in range(max_passes):
+        try:
+            compile(code, '<string>', 'exec')
+            break  # Success, no more fixes needed
+        except SyntaxError as e:
+            if pass_num == max_passes - 1:
+                # Last pass, give up
+                break
+            
+            # Try to fix the error line
+            lines = code.split('\n')
+            error_line_num = (e.lineno or 1) - 1  # Convert to 0-based index
+            if 0 <= error_line_num < len(lines):
+                error_line = lines[error_line_num]
+                fixed_line = error_line
+                
+                # Apply aggressive fixes
+                # Fix missing assignment
+                fixed_line = re.sub(r'\b(\w+)\s+(yf|pd|np|go|fig)\.', r'\1 = \2.', fixed_line)
+                # Fix spaces before parens
+                fixed_line = re.sub(r'(\w+)\s+\(', r'\1(', fixed_line)
+                # Fix spaces after dots
+                fixed_line = re.sub(r'(\w+)\.\s+(\w+)', r'\1.\2', fixed_line)
+                # Fix unterminated strings
+                fixed_line = re.sub(r"\(\s*'([^')]+)\)", r"('\1')", fixed_line)
+                # Fix spaces in brackets
+                fixed_line = re.sub(r'(\w+)\s+\[', r'\1[', fixed_line)
+                
+                # Handle incomplete lines - if line ends with incomplete function call
+                stripped_fixed = fixed_line.strip()
+                if stripped_fixed.endswith('(') and stripped_fixed.count('(') > stripped_fixed.count(')'):
+                    # Incomplete function call - try to complete common patterns
+                    if 'type(' in stripped_fixed and stripped_fixed.endswith('type('):
+                        # Complete: type(pd.Timestamp.now())
+                        fixed_line = fixed_line.rstrip() + "pd.Timestamp.now()))"
+                    elif 'isinstance' in stripped_fixed:
+                        # Complete isinstance call
+                        fixed_line = fixed_line.rstrip() + "pd.Timestamp))"
+                    else:
+                        # Generic completion - add closing parens
+                        missing_parens = stripped_fixed.count('(') - stripped_fixed.count(')')
+                        fixed_line = fixed_line.rstrip() + ')' * missing_parens
+                
+                # Fix unterminated strings at end
+                if "'" in fixed_line:
+                    single_quotes = len([m for m in re.finditer(r"(?<!\\)'", fixed_line)])
+                    if single_quotes % 2 == 1:
+                        if re.search(r"\(\s*'[^']*$", fixed_line):
+                            open_parens = fixed_line.count('(')
+                            close_parens = fixed_line.count(')')
+                            if open_parens > close_parens:
+                                fixed_line = fixed_line.rstrip() + "')"
+                            else:
+                                fixed_line = fixed_line.rstrip() + "'"
+                
+                if fixed_line != error_line:
+                    lines[error_line_num] = fixed_line
+                    code = '\n'.join(lines)
+    
+    return code
+
+
 def generate_code_with_llm(prompt: str) -> str:
     """
     Use OpenAI GPT-4o to generate Python code for financial analysis
     """
     system_prompt = """You are a financial data analyst expert. Generate Python code to answer financial questions.
 
-CRITICAL RULES:
+CRITICAL SYNTAX RULES - FOLLOW EXACTLY:
+1. ALWAYS use assignment operator: `data = yf.download(...)` NOT `data yf.download(...)`
+2. ALWAYS use correct quotes: `yf.download('TICKER', period='6mo', auto_adjust=True)` NOT `yf.download('TICKER', period='6mo', auto_adjust=True')`
+3. NO spaces in module access: `go.Figure()` NOT `go. Figure()`
+4. ALWAYS close all parentheses and quotes properly
+
+CRITICAL FUNCTIONAL RULES:
 1. ALWAYS use `yfinance` imported as `yf` for stock data
 2. ALWAYS use `plotly.graph_objects` imported as `go` for plotting (NEVER matplotlib)
-3. ALWAYS save the Plotly figure as JSON to a variable named `fig_json` using: `import json; import pandas as pd; fig_dict = fig.to_dict(); [trace.update({'x': [str(pd.Timestamp(ts)) if isinstance(ts, (pd.Timestamp, type(pd.Timestamp.now()))) or (isinstance(ts, str) and 'T' in ts) else str(ts) for ts in (trace['x'].tolist() if hasattr(trace.get('x'), 'tolist') else trace.get('x', []))], 'y': trace['y'].tolist() if hasattr(trace.get('y'), 'tolist') else trace.get('y')}) for trace in fig_dict['data']]; fig_json = json.dumps(fig_dict)`
+3. For plotting, ALWAYS save the Plotly figure as JSON to a variable named `fig_json`:
+   ```python
+   import json
+   import pandas as pd
+   fig_dict = fig.to_dict()
+   for trace in fig_dict['data']:
+       if 'x' in trace:
+           x_data = trace['x']
+           if hasattr(x_data, 'tolist'):
+               x_data = x_data.tolist()
+           trace['x'] = [str(pd.Timestamp(ts)) if isinstance(ts, (pd.Timestamp, type(pd.Timestamp.now()))) or (isinstance(ts, str) and 'T' in ts) else str(ts) for ts in x_data]
+       if 'y' in trace:
+           y_data = trace['y']
+           if hasattr(y_data, 'tolist'):
+               y_data = y_data.tolist()
+           trace['y'] = y_data
+   fig_json = json.dumps(fig_dict)
+   ```
 4. If the user asks for text output, use `print()` statements
 5. Use pandas (imported as `pd`) and numpy (imported as `np`) for data manipulation
-6. When using `yf.download()`, include `auto_adjust=True` parameter to avoid warnings: `yf.download('TICKER', period='6mo', auto_adjust=True)`
-7. Suppress warnings at the start of code: `import warnings; warnings.filterwarnings('ignore')`
+6. When using `yf.download()`, include `auto_adjust=True` parameter: `data = yf.download('TICKER', period='6mo', auto_adjust=True)`
+7. Suppress warnings at the start: `import warnings; warnings.filterwarnings('ignore')`
 
 Example patterns:
-- For single stock: `data = yf.download('AAPL', period='6mo', auto_adjust=True)`
-- For multiple stocks comparison: `data = yf.download(['AAPL', 'MSFT'], period='1y', auto_adjust=True); close_prices = data['Close']`
-- For correlation between two stocks: `data = yf.download(['AAPL', 'MSFT'], period='1y', auto_adjust=True); close_prices = data['Close']; rolling_corr = close_prices['AAPL'].rolling(window=20).corr(close_prices['MSFT']); rolling_corr = rolling_corr.fillna(0)` (fill NaN with 0 or dropna() before plotting)
-- For drawdown: `drawdown = (price / price.cummax()) - 1`
-- For plotting: Always create a `go.Figure()` and save to `fig_json` using the conversion pattern in rule 3
-- When downloading multiple tickers, use a list: `yf.download(['TICKER1', 'TICKER2'], period='1y')` which returns a MultiIndex DataFrame
-- To access Close prices for multiple stocks: `data = yf.download(['AAPL', 'MSFT'], period='1y', auto_adjust=True); close_prices = data['Close']` gives a DataFrame with columns 'AAPL' and 'MSFT'
+- Single stock: `data = yf.download('AAPL', period='6mo', auto_adjust=True)`
+- Multiple stocks: `data = yf.download(['AAPL', 'MSFT'], period='1y', auto_adjust=True); close_prices = data['Close']`
+- Plotting: Create `fig = go.Figure(...)` then convert to `fig_json` using the pattern above
 
-Return ONLY the Python code, no explanations, no markdown formatting."""
+Return ONLY valid Python code, no explanations, no markdown formatting. Check your syntax carefully."""
 
     try:
         response = openai_client.chat.completions.create(
@@ -368,6 +550,56 @@ Return ONLY the Python code, no explanations, no markdown formatting."""
         if code.endswith("```"):
             code = code[:-3]
         code = code.strip()
+        
+        # Sanitize the code to fix common syntax errors
+        code = sanitize_generated_code(code)
+        
+        # Validate syntax by trying to compile it
+        try:
+            compile(code, '<string>', 'exec')
+        except SyntaxError as e:
+            # If there's still a syntax error, try to fix it more aggressively
+            # This is a fallback for cases the regex didn't catch
+            lines = code.split('\n')
+            error_line_num = e.lineno or 1
+            if error_line_num <= len(lines):
+                error_line = lines[error_line_num - 1]
+                # Try common fixes on the error line
+                fixed_error_line = error_line
+                # Fix missing = operator more aggressively
+                fixed_error_line = re.sub(r'(\w+)\s+(yf|pd|np|go|fig)\.', r'\1 = \2.', fixed_error_line)
+                # Fix spaces before parentheses
+                fixed_error_line = re.sub(r'(\w+)\s+\(', r'\1(', fixed_error_line)
+                # Fix spaces after dots
+                fixed_error_line = re.sub(r'(\w+)\.\s+(\w+)', r'\1.\2', fixed_error_line)
+                # Fix unterminated strings: function('text) -> function('text')
+                fixed_error_line = re.sub(r"\(\s*'([^')]+)\)", r"('\1')", fixed_error_line)
+                # Fix unterminated strings before closing parens (e.g., "yaxis_title='text)" -> "yaxis_title='text')")
+                fixed_error_line = re.sub(r"='([^']+)\)", r"='\1')", fixed_error_line)
+                fixed_error_line = re.sub(r":\s*'([^']+)\)", r": '\1')", fixed_error_line)
+                fixed_error_line = re.sub(r"\s+'([^']+)\)", r" '\1')", fixed_error_line)
+                # Fix unterminated strings at end: function('text -> function('text')
+                if "'" in fixed_error_line:
+                    single_quotes = len([m for m in re.finditer(r"(?<!\\)'", fixed_error_line)])
+                    if single_quotes % 2 == 1:
+                        # Odd number of quotes = unterminated string
+                        if re.search(r"\(\s*'[^']*$", fixed_error_line):
+                            # Function call with unterminated string
+                            open_parens = fixed_error_line.count('(')
+                            close_parens = fixed_error_line.count(')')
+                            if open_parens > close_parens:
+                                fixed_error_line = fixed_error_line.rstrip() + "')"
+                            else:
+                                fixed_error_line = fixed_error_line.rstrip() + "'"
+                
+                if fixed_error_line != error_line:
+                    lines[error_line_num - 1] = fixed_error_line
+                    code = '\n'.join(lines)
+                    # Try compiling again
+                    try:
+                        compile(code, '<string>', 'exec')
+                    except SyntaxError:
+                        pass  # If it still fails, return the sanitized code anyway
         
         return code
         
