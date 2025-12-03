@@ -52,6 +52,11 @@ export default function Home() {
 
     try {
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      
+      if (!API_URL || API_URL === 'http://localhost:8000') {
+        throw new Error('API URL not configured. Please set NEXT_PUBLIC_API_URL environment variable in Vercel.')
+      }
+      
       const response = await fetch(`${API_URL}/api/generate`, {
         method: 'POST',
         headers: {
@@ -61,7 +66,8 @@ export default function Home() {
       })
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
+        const errorText = await response.text()
+        throw new Error(`HTTP error! status: ${response.status} - ${errorText}`)
       }
 
       const data: GenerateResponse = await response.json()
