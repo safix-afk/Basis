@@ -57,13 +57,18 @@ export default function Home() {
         throw new Error('API URL not configured. Please set NEXT_PUBLIC_API_URL environment variable in Vercel.')
       }
       
-      console.log('Calling API:', `${API_URL}/api/generate`)
+      // Remove trailing slash if present
+      const cleanApiUrl = API_URL.replace(/\/$/, '')
+      const apiEndpoint = `${cleanApiUrl}/api/generate`
+      
+      console.log('Calling API:', apiEndpoint)
+      console.log('API URL from env:', API_URL)
       
       // Create abort controller for timeout (Render free tier can be slow to wake up)
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
       
-      const response = await fetch(`${API_URL}/api/generate`, {
+      const response = await fetch(apiEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -76,7 +81,15 @@ export default function Home() {
 
       if (!response.ok) {
         const errorText = await response.text()
-        throw new Error(`HTTP error! status: ${response.status} - ${errorText}`)
+        let errorMsg = `HTTP ${response.status} error`
+        
+        if (response.status === 404) {
+          errorMsg = `404 Not Found - Backend endpoint not found. Check: 1) Backend URL is correct (${cleanApiUrl}), 2) Backend is running, 3) Try accessing ${cleanApiUrl}/health to verify backend is up.`
+        } else {
+          errorMsg = `HTTP error! status: ${response.status} - ${errorText}`
+        }
+        
+        throw new Error(errorMsg)
       }
 
       const data: GenerateResponse = await response.json()
@@ -104,8 +117,9 @@ export default function Home() {
       if (error instanceof Error) {
         if (error.name === 'AbortError' || error.message.includes('timeout')) {
           errorMessage = 'Request timed out. The backend may be sleeping (Render free tier). Please try again - it may take 30-60 seconds to wake up.'
-        } else if (error.message.includes('Failed to fetch') || error.message.includes('Load failed')) {
-          errorMessage = `Failed to connect to backend at ${process.env.NEXT_PUBLIC_API_URL || 'API URL not set'}. Check: 1) Backend is running, 2) CORS is configured, 3) API URL is correct.`
+        } else if (error.message.includes('Failed to fetch') || error.message.includes('Load failed') || error.message.includes('404')) {
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'API URL not set'
+          errorMessage = `Failed to connect to backend at ${apiUrl}. Troubleshooting: 1) Verify backend is running at ${apiUrl}/health, 2) Check CORS is configured, 3) Verify NEXT_PUBLIC_API_URL is set in Vercel environment variables, 4) Backend may be sleeping (Render free tier) - wait 30-60 seconds and try again.`
         } else {
           errorMessage = error.message
         }
