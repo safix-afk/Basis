@@ -57,13 +57,22 @@ export default function Home() {
         throw new Error('API URL not configured. Please set NEXT_PUBLIC_API_URL environment variable in Vercel.')
       }
       
+      console.log('Calling API:', `${API_URL}/api/generate`)
+      
+      // Create abort controller for timeout (Render free tier can be slow to wake up)
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
+      
       const response = await fetch(`${API_URL}/api/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ prompt }),
+        signal: controller.signal,
       })
+      
+      clearTimeout(timeoutId)
 
       if (!response.ok) {
         const errorText = await response.text()
@@ -90,7 +99,19 @@ export default function Home() {
       }
     } catch (error) {
       console.error('Error:', error)
-      setOutput({ type: 'text', data: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` })
+      let errorMessage = 'Unknown error'
+      
+      if (error instanceof Error) {
+        if (error.name === 'AbortError' || error.message.includes('timeout')) {
+          errorMessage = 'Request timed out. The backend may be sleeping (Render free tier). Please try again - it may take 30-60 seconds to wake up.'
+        } else if (error.message.includes('Failed to fetch') || error.message.includes('Load failed')) {
+          errorMessage = `Failed to connect to backend at ${process.env.NEXT_PUBLIC_API_URL || 'API URL not set'}. Check: 1) Backend is running, 2) CORS is configured, 3) API URL is correct.`
+        } else {
+          errorMessage = error.message
+        }
+      }
+      
+      setOutput({ type: 'text', data: `Error: ${errorMessage}` })
     } finally {
       setLoading(false)
       setPrompt('')

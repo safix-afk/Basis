@@ -32,11 +32,13 @@ cors_origins = [
 vercel_url = os.getenv("VERCEL_URL")
 if vercel_url:
     cors_origins.append(f"https://{vercel_url}")
-    cors_origins.append(f"https://*.vercel.app")  # Allow all Vercel previews
 
+# For production, allow all Vercel domains using regex pattern
+# FastAPI's CORSMiddleware supports allow_origin_regex for pattern matching
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.(app|dev)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
