@@ -304,8 +304,22 @@ class CodeExecutor:
                         
                         fig_dict = clean_for_json(fig_dict)
                         fig_json = json.dumps(fig_dict)
-                    except Exception:
-                        pass  # Use original fig_json if conversion fails
+                    except Exception as e:
+                        # If conversion fails, try to convert Figure object to dict and then JSON
+                        try:
+                            if hasattr(fig_json, 'to_dict'):
+                                fig_dict = fig_json.to_dict()
+                                fig_dict = clean_for_json(fig_dict)
+                                fig_json = json.dumps(fig_dict)
+                            elif isinstance(fig_json, dict):
+                                fig_dict = clean_for_json(fig_json)
+                                fig_json = json.dumps(fig_dict)
+                            else:
+                                # Last resort: convert to string
+                                fig_json = json.dumps(str(fig_json))
+                        except Exception:
+                            # If all else fails, convert to string representation
+                            fig_json = json.dumps({"error": "Failed to serialize figure", "data": str(fig_json)})
                 
                 # If we have fig_json or stdout, the code executed successfully
                 # Only treat as error if we have no successful output AND there are actual error lines
@@ -645,7 +659,50 @@ async def generate_and_execute(request: GenerateRequest):
         stdout = execution_result['stdout']
         
         if fig_json:
-            # We have a Plotly chart (already converted from binary format in executor)
+            # Ensure fig_json is always a string (JSON) for the response model
+            if not isinstance(fig_json, str):
+                # If it's still a Figure object or dict, convert it
+                try:
+                    import json
+                    import plotly.graph_objects as go
+                    if hasattr(fig_json, 'to_dict'):
+                        fig_dict = fig_json.to_dict()
+                        # Use the executor's clean_for_json logic
+                        import numpy as np
+                        import pandas as pd
+                        import math
+                        def clean_for_json(obj):
+                            if isinstance(obj, dict):
+                                return {k: clean_for_json(v) for k, v in obj.items()}
+                            elif isinstance(obj, list):
+                                return [clean_for_json(item) for item in obj]
+                            elif isinstance(obj, np.ndarray):
+                                return clean_for_json(obj.tolist())
+                            elif isinstance(obj, (np.integer, np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64)):
+                                return int(obj)
+                            elif isinstance(obj, (np.floating, np.float_, np.float16, np.float32, np.float64)):
+                                if math.isnan(float(obj)) or math.isinf(float(obj)):
+                                    return None
+                                return float(obj)
+                            elif isinstance(obj, (pd.Timestamp, pd.DatetimeTZDtype)):
+                                return obj.isoformat()
+                            elif isinstance(obj, float):
+                                if math.isnan(obj) or math.isinf(obj):
+                                    return None
+                                return obj
+                            elif hasattr(obj, 'tolist'):
+                                return clean_for_json(obj.tolist())
+                            return obj
+                        fig_dict = clean_for_json(fig_dict)
+                        fig_json = json.dumps(fig_dict)
+                    elif isinstance(fig_json, dict):
+                        fig_json = json.dumps(fig_json)
+                    else:
+                        fig_json = json.dumps(str(fig_json))
+                except Exception as e:
+                    fig_json = json.dumps({"error": f"Failed to serialize figure: {str(e)}"})
+            
+            # We have a Plotly chart (already converted to JSON string)
             return GenerateResponse(
                 generated_code=generated_code,
                 output_type="plot",
