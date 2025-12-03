@@ -146,8 +146,14 @@ class CodeExecutor:
                 fig_json = self.exec_globals.get('fig_json')
                 if fig_json:
                     try:
+                        # If it's a Plotly figure object, convert to dict first
+                        if hasattr(fig_json, 'to_dict'):
+                            fig_dict = fig_json.to_dict()
                         # If it's a string (JSON), parse and convert binary data
-                        fig_dict = json.loads(fig_json) if isinstance(fig_json, str) else fig_json
+                        elif isinstance(fig_json, str):
+                            fig_dict = json.loads(fig_json)
+                        else:
+                            fig_dict = fig_json
                         # Convert binary-encoded numpy arrays to regular lists and handle dates
                         if 'data' in fig_dict:
                             import base64
@@ -269,22 +275,31 @@ class CodeExecutor:
                                                 # Other types, ensure they're strings
                                                 trace['x'] = [str(x) for x in x_data]
                         # Convert NaN, Infinity values to null for JSON compatibility
+                        # Also handle numpy arrays recursively
                         import math
                         def clean_for_json(obj):
                             if isinstance(obj, dict):
                                 return {k: clean_for_json(v) for k, v in obj.items()}
                             elif isinstance(obj, list):
                                 return [clean_for_json(item) for item in obj]
+                            elif isinstance(obj, np.ndarray):
+                                # Convert numpy array to list recursively
+                                return clean_for_json(obj.tolist())
+                            elif isinstance(obj, (np.integer, np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64)):
+                                return int(obj)
+                            elif isinstance(obj, (np.floating, np.float_, np.float16, np.float32, np.float64)):
+                                if math.isnan(float(obj)) or math.isinf(float(obj)):
+                                    return None
+                                return float(obj)
+                            elif isinstance(obj, (pd.Timestamp, pd.DatetimeTZDtype)):
+                                return obj.isoformat()
                             elif isinstance(obj, float):
                                 if math.isnan(obj) or math.isinf(obj):
                                     return None
                                 return obj
-                            elif isinstance(obj, np.floating):
-                                if math.isnan(float(obj)) or math.isinf(float(obj)):
-                                    return None
-                                return float(obj)
-                            elif isinstance(obj, np.integer):
-                                return int(obj)
+                            elif hasattr(obj, 'tolist'):
+                                # Handle other array-like objects (e.g., pandas Index)
+                                return clean_for_json(obj.tolist())
                             return obj
                         
                         fig_dict = clean_for_json(fig_dict)
@@ -501,23 +516,15 @@ CRITICAL SYNTAX RULES - FOLLOW EXACTLY:
 CRITICAL FUNCTIONAL RULES:
 1. ALWAYS use `yfinance` imported as `yf` for stock data
 2. ALWAYS use `plotly.graph_objects` imported as `go` for plotting (NEVER matplotlib)
-3. For plotting, ALWAYS save the Plotly figure as JSON to a variable named `fig_json`:
+3. For plotting, ALWAYS save the Plotly figure to a variable named `fig_json`. You can either:
+   - Option A (Simplest - Recommended): Just assign the figure object directly: `fig_json = fig`
+   - Option B: Convert to dict: `fig_json = fig.to_dict()`
+   DO NOT try to convert to JSON string yourself - the backend will handle all numpy array and date conversions automatically.
+   Example:
    ```python
-   import json
-   import pandas as pd
-   fig_dict = fig.to_dict()
-   for trace in fig_dict['data']:
-       if 'x' in trace:
-           x_data = trace['x']
-           if hasattr(x_data, 'tolist'):
-               x_data = x_data.tolist()
-           trace['x'] = [str(pd.Timestamp(ts)) if isinstance(ts, (pd.Timestamp, type(pd.Timestamp.now()))) or (isinstance(ts, str) and 'T' in ts) else str(ts) for ts in x_data]
-       if 'y' in trace:
-           y_data = trace['y']
-           if hasattr(y_data, 'tolist'):
-               y_data = y_data.tolist()
-           trace['y'] = y_data
-   fig_json = json.dumps(fig_dict)
+   fig = go.Figure(data=[go.Scatter(x=data.index, y=data['Close'])])
+   fig.update_layout(title='Stock Price')
+   fig_json = fig  # Just assign the figure object - backend handles conversion
    ```
 4. If the user asks for text output, use `print()` statements
 5. Use pandas (imported as `pd`) and numpy (imported as `np`) for data manipulation
