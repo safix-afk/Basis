@@ -2,6 +2,7 @@ services:
   - type: web
     name: basis-backend
     env: python
+    pythonVersion: 3.12.0
     buildCommand: chmod +x render-build.sh && ./render-build.sh
     startCommand: chmod +x render-start.sh && ./render-start.sh
     envVars:
